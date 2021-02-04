@@ -1,0 +1,11 @@
+docker create --network emqx-net --name emqx -p 18083:18083 -p 8083:8083 -p 1883:1883 -p 4369:4369 \
+    -v /data/docker/emqx/etc/plugins/emqx_dashboard.conf:/opt/emqx/etc/plugins/emqx_dashboard.conf \
+    -e EMQX_ALLOW_ANONYMOUS=false \
+    -e EMQX_LISTENER__TCP__EXTERNAL=1883 \
+    -e EMQX_LISTENER__WS__EXTERNAL=8083 \
+    -e EMQX_LOADED_PLUGINS="emqx_auth_redis,emqx_recon,emqx_retainer,emqx_dashboard" \
+    -e EMQX_AUTH__REDIS__SERVER="redis:6379" \
+    -e EMQX_AUTH__REDIS__PASSWORD=etSme0704 \
+    -e EMQX_AUTH__REDIS__PASSWORD_HASH="salt,sha256" \
+    -e EMQX_AUTH__REDIS__AUTH_CMD="HMGET mqtt_user:%u password salt" \
+    emqx/emqx:latest
