@@ -28,7 +28,9 @@ static const char *TAG = "hello";
 // wifi manager globals
 EventGroupHandle_t xAppEventGroup;
 EventBits_t xBitsToWaitFor = APP_EBIT_WIFI_START_AP | APP_EBIT_WIFI_START_STA;
-char *ap_ssid = "blu-esp1", *ap_passwd = "test123456";
+char _constSSID[] = "blu-esp1";
+char _constPasswd[] = "test123456";
+char *ap_ssid = _constSSID, *ap_passwd = _constPasswd;
 char *wifi_ssid = NULL, *wifi_passwd = NULL;
 WIFIManagerConfig xWifiMgrCfg = {
     .ap_ssid = &ap_ssid,
@@ -60,7 +62,7 @@ char *getNowTimeStr()
     struct tm timeinfo;
     time(&now);
     localtime_r(&now, &timeinfo);
-    strftime(strftime_buf, 64, "%c", &timeinfo);
+    strftime(strftime_buf, 64, "%F %T", &timeinfo);
     ESP_LOGI(TAG, "The current date/time in Shanghai is: %s", strftime_buf);
 
     return strftime_buf;
@@ -121,13 +123,18 @@ void syncNtpTime()
     }
 }
 
+int mqttCallback(esp_mqtt_event_handle_t event)
+{
+    return 0;
+}
+
 void onStaOK()
 {
     syncNtpTime();
 
     if (!httpsrv)
         start_http_srv(&httpsrv, &xWifiMgrCfg);
-    mqtt_app_start();
+    mqtt_app_start(mqttCallback);
 }
 
 void onApOk()
@@ -281,15 +288,15 @@ void app_main()
                                                         &ip_event_instance));
     // get previous stored wifi configuration
     wifi_config_t wifi_config;
-    ESP_ERROR_CHECK(esp_wifi_get_config(ESP_IF_WIFI_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_get_config(WIFI_IF_STA, &wifi_config));
 
     if (strlen((const char *)wifi_config.sta.ssid))
     {
         ESP_LOGI(TAG, "Found ssid %s", (const char *)wifi_config.sta.ssid);
         ESP_LOGI(TAG, "Found password %s", (const char *)wifi_config.sta.password);
-        *xWifiMgrCfg.sta_ssid = malloc(strlen((char *)wifi_config.sta.ssid) + 1);
+        *xWifiMgrCfg.sta_ssid = (char *)malloc(strlen((char *)wifi_config.sta.ssid) + 1);
         strcpy(*xWifiMgrCfg.sta_ssid, (char *)wifi_config.sta.ssid);
-        *xWifiMgrCfg.sta_passwd = malloc(strlen((char *)wifi_config.sta.password) + 1);
+        *xWifiMgrCfg.sta_passwd = (char *)malloc(strlen((char *)wifi_config.sta.password) + 1);
         strcpy(*xWifiMgrCfg.sta_passwd, (char *)wifi_config.sta.password);
         xEventGroupSetBits(xAppEventGroup, APP_EBIT_WIFI_START_STA);
         //start_wifi_sta(*xWifiMgrCfg.sta_ssid, *xWifiMgrCfg.sta_passwd);

@@ -1,7 +1,7 @@
 #include "app_common.h"
 #include "app_spiffs.h"
 
-static const char *const TAG="app_spiffs";
+static const char *const TAG = "app_spiffs";
 // esp_vfs_spiffs_unregister(NULL);
 int mount_spiffs()
 {

@@ -7,6 +7,7 @@
 #include <string.h>
 #include <esp_http_server.h>
 #include <freertos/event_groups.h>
+#include <mqtt_client.h>
 
 #define APP_WIFI_RETRY_MAX 5
 
@@ -30,7 +31,8 @@ typedef struct WIFIManagerConfig
     BaseType_t xApChange;
 } WIFIManagerConfig;
 
-extern void mqtt_app_start(void);
+typedef int (*mqtt_ondata_callback)(esp_mqtt_event_handle_t event);
+extern void mqtt_app_start(mqtt_ondata_callback cb);
 
 typedef struct DeviceInfo
 {
@@ -43,4 +45,5 @@ typedef struct DeviceInfo
 
 extern DeviceInfo *getDeviceInfo();
 extern char *deviceInfoToJson();
+
 #endif
