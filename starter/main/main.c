@@ -11,7 +11,7 @@
 #include "app_httpsrv.h"
 #include "app_spiffs.h"
 #include <freertos/task.h>
-#include <esp_event_loop.h>
+#include <esp_event.h>
 #include <nvs_flash.h>
 #include <esp_spi_flash.h>
 #include <stdio.h>
@@ -21,6 +21,7 @@
 #include <lwip/sys.h>
 #include <cJSON.h>
 #include <sntp.h>
+#include <time.h>
 
 static const char *TAG = "hello";
 
@@ -52,21 +53,21 @@ DeviceInfo *getDeviceInfo()
     return &devInfo;
 }
 
-char *deviceInfoToJson()
+char *getNowTimeStr()
 {
     time_t now;
-    char strftime_buf[64];
+    char *strftime_buf = (char *)malloc(64);
     struct tm timeinfo;
-
     time(&now);
-    // Set timezone to China Standard Time
-    setenv("TZ", "CST-8", 1);
-    tzset();
-
     localtime_r(&now, &timeinfo);
     strftime(strftime_buf, sizeof(strftime_buf), "%c", &timeinfo);
     ESP_LOGI(TAG, "The current date/time in Shanghai is: %s", strftime_buf);
 
+    return strftime_buf;
+}
+
+char *deviceInfoToJson()
+{
     DeviceInfo *info = &devInfo;
 
     cJSON *root = cJSON_CreateObject();
@@ -75,12 +76,15 @@ char *deviceInfoToJson()
     cJSON_AddItemToObject(root, "version", cJSON_CreateString(info->version));
     cJSON_AddItemToObject(root, "owner", cJSON_CreateString(info->owner));
     cJSON_AddItemToObject(root, "tags", cJSON_CreateString(info->tags));
-    cJSON_AddItemToObject(root, "time", cJSON_CreateString(strftime_buf));
 
+    char *now = getNowTimeStr();
+    cJSON_AddItemToObject(root, "time", cJSON_CreateString(now));
+    free(now);
     char *tmp = cJSON_Print(root);
-    char *ret = malloc(strlen(tmp) + 1);
+    char *ret = (char *)malloc(strlen(tmp) + 1);
     memcpy(ret, tmp, strlen(tmp) + 1);
     cJSON_Delete(root);
+
     return ret;
 }
 
@@ -92,6 +96,10 @@ void syncNtpTime()
     sntp_setoperatingmode(SNTP_OPMODE_POLL);
     sntp_setservername(0, "pool.ntp.org");
     sntp_init();
+    // Set timezone to China Standard Time
+    setenv("TZ", "CST-8", 1);
+    tzset();
+
     // wait for time to be set
     time_t now = 0;
     struct tm timeinfo = {0};
@@ -153,11 +161,11 @@ static esp_err_t system_event_handler(void *ctx, system_event_t *event)
         esp_wifi_connect();
         break;
     case SYSTEM_EVENT_STA_GOT_IP:
-        ESP_LOGI(TAG, "got ip:%s", ip4addr_ntoa(&info->got_ip));
+        ESP_LOGI(TAG, "got ip:%s", ip4addr_ntoa((ip4_addr_t *)&info->got_ip.ip_info.ip));
         onWifiConnected();
         break;
     case SYSTEM_EVENT_AP_STAIPASSIGNED:
-        ESP_LOGI(TAG, "got client:%s", ip4addr_ntoa(&info->ap_staipassigned));
+        ESP_LOGI(TAG, "got client:%s", ip4addr_ntoa((ip4_addr_t *)&info->ap_staipassigned.ip));
 
         onWifiDisconnected();
         break;
@@ -227,7 +235,7 @@ void app_main()
 
     ESP_ERROR_CHECK(ret);
 
-    tcpip_adapter_init();
+    esp_netif_init();
     // system event loop
     ESP_ERROR_CHECK(esp_event_loop_init(system_event_handler, NULL));
 
