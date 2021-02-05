@@ -27,7 +27,7 @@ static const char *TAG = "hello";
 
 // wifi manager globals
 EventGroupHandle_t xAppEventGroup;
-const EventBits_t xBitsToWaitFor = APP_EBIT_WIFI_START_AP | APP_EBIT_WIFI_START_STA;
+EventBits_t xBitsToWaitFor = APP_EBIT_WIFI_START_AP | APP_EBIT_WIFI_START_STA;
 char *ap_ssid = "blu-esp1", *ap_passwd = "test123456";
 char *wifi_ssid = NULL, *wifi_passwd = NULL;
 WIFIManagerConfig xWifiMgrCfg = {
@@ -60,7 +60,7 @@ char *getNowTimeStr()
     struct tm timeinfo;
     time(&now);
     localtime_r(&now, &timeinfo);
-    strftime(strftime_buf, sizeof(strftime_buf), "%c", &timeinfo);
+    strftime(strftime_buf, 64, "%c", &timeinfo);
     ESP_LOGI(TAG, "The current date/time in Shanghai is: %s", strftime_buf);
 
     return strftime_buf;
@@ -79,11 +79,11 @@ char *deviceInfoToJson()
 
     char *now = getNowTimeStr();
     cJSON_AddItemToObject(root, "time", cJSON_CreateString(now));
-    free(now);
     char *tmp = cJSON_Print(root);
     char *ret = (char *)malloc(strlen(tmp) + 1);
     memcpy(ret, tmp, strlen(tmp) + 1);
     cJSON_Delete(root);
+    free(now);
 
     return ret;
 }
@@ -104,13 +104,13 @@ void syncNtpTime()
     time_t now = 0;
     struct tm timeinfo = {0};
     int retry = 0;
-    const int retry_count = 5;
+    const int retry_count = 30;
     while (sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET && ++retry < retry_count)
     {
         ESP_LOGI(TAG, "Waiting for system time to be set... (%d/%d)", retry, retry_count);
         vTaskDelay(2000 / portTICK_PERIOD_MS);
     }
-    if (retry_count >= 30)
+    if (retry >= 30)
     {
         ESP_LOGE(TAG, "failed sync time");
     }
@@ -121,7 +121,7 @@ void syncNtpTime()
     }
 }
 
-void onWifiConnected()
+void onStaOK()
 {
     syncNtpTime();
 
@@ -130,50 +130,70 @@ void onWifiConnected()
     mqtt_app_start();
 }
 
-void onWifiDisconnected()
+void onApOk()
 {
     if (!httpsrv)
         start_http_srv(&httpsrv, &xWifiMgrCfg);
 }
 
-static esp_err_t system_event_handler(void *ctx, system_event_t *event)
+static void wifi_event_handler(void *arg, esp_event_base_t event_base,
+                               int32_t event_id, void *event_data)
 {
-    system_event_info_t *info = &event->event_info;
     static int s_retry_num = 0;
-    switch (event->event_id)
+    ESP_LOGE(TAG, "event got %s, %d", event_base, event_id);
+    if (event_base == WIFI_EVENT)
     {
-    case SYSTEM_EVENT_STA_DISCONNECTED:
-        ESP_LOGE(TAG, "disconnected from AP");
-        if (s_retry_num < APP_WIFI_RETRY_MAX)
+        switch (event_id)
         {
+        case WIFI_EVENT_STA_DISCONNECTED:
+            ESP_LOGE(TAG, "disconnected from AP");
+            if (s_retry_num < APP_WIFI_RETRY_MAX)
+            {
+                esp_wifi_connect();
+                s_retry_num++;
+                ESP_LOGI(TAG, "retry connect AP");
+            }
+            else
+            {
+                ESP_LOGI(TAG, "swith to ap mode");
+                xEventGroupSetBits(xAppEventGroup, APP_EBIT_WIFI_START_AP);
+                s_retry_num = 0;
+            }
+            break;
+        case WIFI_EVENT_STA_START:
             esp_wifi_connect();
-            s_retry_num++;
-            ESP_LOGI(TAG, "retry connect AP");
-        }
-        else
-        {
-            ESP_LOGI(TAG, "swith to ap mode");
-            xEventGroupSetBits(xAppEventGroup, APP_EBIT_WIFI_START_AP);
-            s_retry_num = 0;
-        }
-        break;
-    case SYSTEM_EVENT_STA_START:
-        esp_wifi_connect();
-        break;
-    case SYSTEM_EVENT_STA_GOT_IP:
-        ESP_LOGI(TAG, "got ip:%s", ip4addr_ntoa((ip4_addr_t *)&info->got_ip.ip_info.ip));
-        onWifiConnected();
-        break;
-    case SYSTEM_EVENT_AP_STAIPASSIGNED:
-        ESP_LOGI(TAG, "got client:%s", ip4addr_ntoa((ip4_addr_t *)&info->ap_staipassigned.ip));
+            break;
 
-        onWifiDisconnected();
-        break;
-    default:
-        break;
+        case WIFI_EVENT_STA_CONNECTED:
+            break;
+
+        default:
+            break;
+        }
+
+        return;
     }
 
-    return ESP_OK;
+    if (event_base == IP_EVENT)
+    {
+        ip_event_got_ip_t *event = NULL;
+        switch (event_id)
+        {
+        case IP_EVENT_STA_GOT_IP:
+            s_retry_num = 0;
+            event = (ip_event_got_ip_t *)event_data;
+            ESP_LOGI(TAG, "esp got ip:" IPSTR, IP2STR(&event->ip_info.ip));
+            onStaOK();
+            break;
+        case IP_EVENT_AP_STAIPASSIGNED:
+            event = (ip_event_got_ip_t *)event_data;
+            ESP_LOGI(TAG, "client got ip:" IPSTR, IP2STR(&event->ip_info.ip));
+            onApOk();
+            break;
+        }
+
+        return;
+    }
 }
 
 static void vTaskWIFIManager(void *pvParameters)
@@ -203,6 +223,7 @@ static void vTaskWIFIManager(void *pvParameters)
             // // not needed
             // DELAYMS(500);
         }
+
         ESP_LOGI(TAG, "FINISHED WIFIManager");
     }
 }
@@ -223,8 +244,7 @@ static void vTaskStats(void *pvParam)
 
 void app_main()
 {
-    esp_err_t err = ESP_OK;
-
+    xAppEventGroup = xEventGroupCreate();
     //Initialize NVS
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
@@ -236,18 +256,29 @@ void app_main()
     ESP_ERROR_CHECK(ret);
 
     esp_netif_init();
-    // system event loop
-    ESP_ERROR_CHECK(esp_event_loop_init(system_event_handler, NULL));
 
-    // create tasks
-    xAppEventGroup = xEventGroupCreate();
-    xTaskCreate(vTaskWIFIManager, "WIFI Mgr", 1024 * 8, &xWifiMgrCfg, 8, NULL); //configMAX_PRIORITIES
-    xTaskCreate(vTaskStats, "stats", 1000, NULL, configMAX_CO_ROUTINE_PRIORITIES, NULL);
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_create_default_wifi_sta(); // ?? !!!!
 
     // init wifi
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
+    xTaskCreate(vTaskWIFIManager, "WIFI Mgr", 1024 * 8, &xWifiMgrCfg, 8, NULL); //configMAX_PRIORITIES
+    xTaskCreate(vTaskStats, "stats", 1000, NULL, configMAX_CO_ROUTINE_PRIORITIES, NULL);
+
+    esp_event_handler_instance_t wifi_event_instance;
+    esp_event_handler_instance_t ip_event_instance;
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
+                                                        ESP_EVENT_ANY_ID,
+                                                        &wifi_event_handler,
+                                                        NULL,
+                                                        &wifi_event_instance));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
+                                                        IP_EVENT_STA_GOT_IP,
+                                                        &wifi_event_handler,
+                                                        NULL,
+                                                        &ip_event_instance));
     // get previous stored wifi configuration
     wifi_config_t wifi_config;
     ESP_ERROR_CHECK(esp_wifi_get_config(ESP_IF_WIFI_STA, &wifi_config));
