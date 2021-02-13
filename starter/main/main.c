@@ -4,7 +4,7 @@
 
    Unless required by applicable law or agreed to in writing, this
    software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-   CONDITIONS OF ANY KIND, either express or implied.
+   CONDITIONS OF AaNY KIND, either express or implied.
 */
 #include "app_common.h"
 #include "app_wifi.h"
@@ -28,10 +28,35 @@ static const char *TAG = "hello";
 // wifi manager globals
 EventGroupHandle_t xAppEventGroup;
 EventBits_t xBitsToWaitFor = APP_EBIT_WIFI_START_AP | APP_EBIT_WIFI_START_STA;
-char _constSSID[] = "blu-esp1";
-char _constPasswd[] = "test123456";
-char *ap_ssid = _constSSID, *ap_passwd = _constPasswd;
+
+static esp_netif_t *_netif = NULL;
+
+esp_netif_t *getNetif()
+{
+    return _netif;
+}
+
+void setNetif(esp_netif_t *nif)
+{
+    _netif = nif;
+}
+
+#define DEV_MODEL "ESP32"
+#define DEV_SN "HS00001"
+
+DeviceInfo devInfo = {
+    .model = DEV_MODEL,
+    .sn = DEV_SN,
+    .owner = "bruce.lu",
+    .tags = "home;dev",
+    .version = "0.0.1",
+};
+
+char _constPasswd[] = "hubstack.cn";
+char *ap_ssid = DEV_SN;
+char *ap_passwd = _constPasswd;
 char *wifi_ssid = NULL, *wifi_passwd = NULL;
+
 WIFIManagerConfig xWifiMgrCfg = {
     .ap_ssid = &ap_ssid,
     .ap_passwd = &ap_passwd,
@@ -40,14 +65,6 @@ WIFIManagerConfig xWifiMgrCfg = {
     .pxEvtGroup = &xAppEventGroup,
     .pxBitsToWaitFor = &xBitsToWaitFor,
     .xApChange = 0,
-};
-
-DeviceInfo devInfo = {
-    .model = "esp32",
-    .sn = "bh00001",
-    .owner = "bruce.lu",
-    .tags = "home;dev",
-    .version = "0.0.1",
 };
 
 DeviceInfo *getDeviceInfo()
@@ -96,7 +113,7 @@ httpd_handle_t httpsrv = NULL;
 void syncNtpTime()
 {
     sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    sntp_setservername(0, "pool.ntp.org");
+    sntp_setservername(0, "cn.pool.ntp.org");
     sntp_init();
     // Set timezone to China Standard Time
     setenv("TZ", "CST-8", 1);
@@ -110,7 +127,7 @@ void syncNtpTime()
     while (sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET && ++retry < retry_count)
     {
         ESP_LOGI(TAG, "Waiting for system time to be set... (%d/%d)", retry, retry_count);
-        vTaskDelay(2000 / portTICK_PERIOD_MS);
+        vTaskDelay(6000 / portTICK_PERIOD_MS);
     }
     if (retry >= 30)
     {
@@ -183,20 +200,23 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 
     if (event_base == IP_EVENT)
     {
-        ip_event_got_ip_t *event = NULL;
         switch (event_id)
         {
         case IP_EVENT_STA_GOT_IP:
+        {
             s_retry_num = 0;
-            event = (ip_event_got_ip_t *)event_data;
+            ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
             ESP_LOGI(TAG, "esp got ip:" IPSTR, IP2STR(&event->ip_info.ip));
             onStaOK();
-            break;
+        }
+        break;
         case IP_EVENT_AP_STAIPASSIGNED:
-            event = (ip_event_got_ip_t *)event_data;
-            ESP_LOGI(TAG, "client got ip:" IPSTR, IP2STR(&event->ip_info.ip));
+        {
+            ip_event_ap_staipassigned_t *event = (ip_event_ap_staipassigned_t *)event_data;
+            ESP_LOGI(TAG, "client got ip:" IPSTR, IP2STR(&event->ip));
             onApOk();
-            break;
+        }
+        break;
         }
 
         return;
@@ -252,6 +272,7 @@ static void vTaskStats(void *pvParam)
 void app_main()
 {
     xAppEventGroup = xEventGroupCreate();
+
     //Initialize NVS
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
@@ -263,16 +284,15 @@ void app_main()
     ESP_ERROR_CHECK(ret);
 
     esp_netif_init();
-
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta(); // ?? !!!!
+    setNetif(esp_netif_create_default_wifi_sta()); // important!! or IP event handler will not be trigger
 
     // init wifi
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
     xTaskCreate(vTaskWIFIManager, "WIFI Mgr", 1024 * 8, &xWifiMgrCfg, 8, NULL); //configMAX_PRIORITIES
-    xTaskCreate(vTaskStats, "stats", 1000, NULL, configMAX_CO_ROUTINE_PRIORITIES, NULL);
+    // xTaskCreate(vTaskStats, "stats", 1000, NULL, configMAX_CO_ROUTINE_PRIORITIES, NULL);
 
     esp_event_handler_instance_t wifi_event_instance;
     esp_event_handler_instance_t ip_event_instance;
@@ -282,7 +302,7 @@ void app_main()
                                                         NULL,
                                                         &wifi_event_instance));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
-                                                        IP_EVENT_STA_GOT_IP,
+                                                        ESP_EVENT_ANY_ID,
                                                         &wifi_event_handler,
                                                         NULL,
                                                         &ip_event_instance));
@@ -305,6 +325,8 @@ void app_main()
     {
         xEventGroupSetBits(xAppEventGroup, APP_EBIT_WIFI_START_AP);
     }
+
+    //xTaskCreate(servoTask, "servo task", 2048, NULL, 5, NULL);
 
     // vTaskStartScheduler();
     // esp_event_loop_delete(system_event_handler);

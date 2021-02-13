@@ -36,14 +36,17 @@ extern void mqtt_app_start(mqtt_ondata_callback cb);
 
 typedef struct DeviceInfo
 {
-    const char *model;
-    const char *sn;
-    const char *version;
-    const char *owner;
+    const char *const model;
+    const char *const sn;
+    const char *const version;
+    const char *const owner;
     const char *tags;
 } DeviceInfo;
 
 extern DeviceInfo *getDeviceInfo();
 extern char *deviceInfoToJson();
+extern void servoTask(void *args);
+extern esp_netif_t *getNetif();
+extern void setNetif(esp_netif_t *nif);
 
 #endif
